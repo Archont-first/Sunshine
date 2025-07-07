@@ -1,17 +1,16 @@
-import json
 import os
-import asyncio
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import json
+from apscheduler.schedulers.background import BackgroundScheduler
+import telebot
+from telebot import types
 
 DATA_FILE = "clients.json"
 TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Bot(TOKEN)
-dp = Dispatcher()
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable not set")
 
+bot = telebot.TeleBot(TOKEN)
 waiting_for_apartment = set()
 
 
@@ -30,56 +29,67 @@ def save_clients(data):
 clients = load_clients()
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
     user_id = str(message.from_user.id)
     if user_id not in clients:
         waiting_for_apartment.add(user_id)
-        await message.answer("Введите номер апартамента:")
+        bot.send_message(message.chat.id, "Введите номер апартамента:")
     else:
-        await message.answer("Вы уже зарегистрированы. Ожидайте рассылку.")
+        bot.send_message(message.chat.id, "Вы уже зарегистрированы. Ожидайте рассылку.")
 
 
-@dp.message()
-async def process_message(message: Message):
+@bot.message_handler(func=lambda m: True)
+def process_message(message):
     user_id = str(message.from_user.id)
+    text = message.text.strip()
     if user_id in waiting_for_apartment:
         clients[user_id] = {
             "username": message.from_user.username,
-            "apartment": message.text.strip()
+            "apartment": text,
         }
         save_clients(clients)
         waiting_for_apartment.remove(user_id)
-        await message.answer("Спасибо! Вы зарегистрированы.")
-    elif message.text in {"Конечно", "Нет, спасибо"}:
-        await handle_response(message)
+        bot.send_message(message.chat.id, "Спасибо! Вы зарегистрированы.")
+    elif text in {"Конечно", "Нет, спасибо"}:
+        handle_response(message)
+    elif text in {"Пончики", "Кофе"}:
+        send_price_info(message)
 
 
-async def handle_response(message: Message):
+def handle_response(message):
     if message.text == "Конечно":
-        markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add(KeyboardButton("Пончики"), KeyboardButton("Кофе"))
-        await message.answer("Что желаете?", reply_markup=markup)
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(types.KeyboardButton("Пончики"), types.KeyboardButton("Кофе"))
+        bot.send_message(message.chat.id, "Что желаете?", reply_markup=markup)
     else:
-        await message.answer("Хорошего дня!")
+        bot.send_message(message.chat.id, "Хорошего дня!")
 
 
-async def send_offer():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("Конечно"), KeyboardButton("Нет, спасибо"))
+def send_price_info(message):
+    prices = {"Пончики": "5$", "Кофе": "3$"}
+    item = message.text
+    price = prices.get(item)
+    if price:
+        bot.send_message(message.chat.id, f"Стоимость {item.lower()} {price}. Оплата на счёт 123-456.")
+
+
+def send_offer():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton("Конечно"), types.KeyboardButton("Нет, спасибо"))
     for user_id in clients:
         try:
-            await bot.send_message(user_id, "Хотите начать свой день с кофе?", reply_markup=markup)
+            bot.send_message(user_id, "Хотите начать свой день с кофе?", reply_markup=markup)
         except Exception as e:
             print(f"Не удалось отправить сообщение {user_id}: {e}")
 
 
-async def main():
-    scheduler = AsyncIOScheduler()
+def main():
+    scheduler = BackgroundScheduler()
     scheduler.add_job(send_offer, "interval", days=2)
     scheduler.start()
-    await dp.start_polling(bot)
+    bot.infinity_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
